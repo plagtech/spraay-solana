@@ -1,0 +1,33 @@
+{
+  "name": "@spraay/solana-sdk",
+  "version": "1.0.0",
+  "description": "Spraay batch payment SDK for Solana — send SOL and SPL tokens to multiple recipients in optimized transactions",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "ts-node tests/test-batch.ts",
+    "test:devnet": "CLUSTER=devnet ts-node tests/test-batch.ts"
+  },
+  "keywords": [
+    "solana",
+    "batch-payments",
+    "spl-token",
+    "usdc",
+    "airdrop",
+    "multisend",
+    "spraay"
+  ],
+  "author": "plagtech",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "@solana/spl-token": "^0.4.9",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "ts-node": "^10.9.2",
+    "@types/node": "^22.0.0"
+  }
+}
