@@ -1,16 +1,30 @@
 /**
- * Spraay Solana SDK — Test Suite
+ * Spraay Solana SDK — Full Test Suite
  *
- * Run on devnet:
- *   CLUSTER=devnet ts-node tests/test-batch.ts
+ * Tests:
+ *   1. Cost estimates for large batches
+ *   2. Batch SOL transfer (3 recipients)
+ *   3. Batch USDC transfer (3 recipients, devnet USDC)
+ *   4. Stress test — max SOL recipients in a single transaction
+ *
+ * Run:   npm test
  *
  * Prerequisites:
  *   - npm install
- *   - Fund sender wallet with devnet SOL: solana airdrop 2 <SENDER_ADDRESS> --url devnet
+ *   - solana config set --url devnet
+ *   - Fund wallet with SOL: https://faucet.solana.com
+ *   - Fund wallet with USDC: https://faucet.circle.com (select Solana)
  */
 
-import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import {
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+} from "@solana/web3.js";
 import { SpraySolana, KNOWN_TOKENS } from "../src/index";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
 // ============================================================================
 // Config
@@ -18,144 +32,272 @@ import { SpraySolana, KNOWN_TOKENS } from "../src/index";
 
 const DEVNET_RPC = "https://api.devnet.solana.com";
 
-// Generate a fresh sender keypair for testing
-// In production, load from env or wallet adapter
-const sender = Keypair.generate();
+// Devnet USDC mint (from Circle faucet)
+const DEVNET_USDC_MINT = new PublicKey(
+  "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+);
 
-// Generate test recipients
-const recipient1 = Keypair.generate();
-const recipient2 = Keypair.generate();
-const recipient3 = Keypair.generate();
+// Load keypair
+const keypairPath = path.join(os.homedir(), "devnet-test.json");
+if (!fs.existsSync(keypairPath)) {
+  console.error("❌ Keypair not found at ~/devnet-test.json");
+  console.error(
+    "   Run: solana-keygen new -o C:\\Users\\Hp\\devnet-test.json --no-bip39-passphrase"
+  );
+  process.exit(1);
+}
+const secretKey = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
+const sender = Keypair.fromSecretKey(Uint8Array.from(secretKey));
 
 // Initialize Spraay SDK
 const spraay = new SpraySolana({
   rpcUrl: DEVNET_RPC,
   feePercent: 0.3,
-  feeTreasury: sender.publicKey.toBase58(), // Send fees back to sender for testing
+  feeTreasury: sender.publicKey.toBase58(), // Fees return to sender in test
   commitment: "confirmed",
 });
 
 // ============================================================================
-// Test: Batch SOL Transfer
+// Test 1: Cost Estimates
 // ============================================================================
 
-async function testBatchSolTransfer() {
-  console.log("=== Spraay Solana SDK — Batch SOL Transfer Test ===\n");
+function testEstimates() {
+  console.log("📊 TEST 1: Cost Estimates\n");
 
-  console.log("Sender:", sender.publicKey.toBase58());
-  console.log("Recipient 1:", recipient1.publicKey.toBase58());
-  console.log("Recipient 2:", recipient2.publicKey.toBase58());
-  console.log("Recipient 3:", recipient3.publicKey.toBase58());
+  const scenarios = [
+    { recipients: 10, isToken: false, newAtas: 0, label: "10 SOL recipients" },
+    { recipients: 50, isToken: false, newAtas: 0, label: "50 SOL recipients" },
+    { recipients: 200, isToken: false, newAtas: 0, label: "200 SOL recipients" },
+    { recipients: 10, isToken: true, newAtas: 10, label: "10 USDC (new ATAs)" },
+    { recipients: 50, isToken: true, newAtas: 50, label: "50 USDC (new ATAs)" },
+    { recipients: 200, isToken: true, newAtas: 200, label: "200 USDC (new ATAs)" },
+    { recipients: 200, isToken: true, newAtas: 0, label: "200 USDC (existing ATAs)" },
+  ];
 
-  // Step 1: Airdrop SOL to sender on devnet
-  console.log("\n[1/4] Requesting airdrop...");
-  const connection = spraay.getConnection();
+  console.log(
+    "  Scenario                    | Txs | Fees (SOL)  | Rent (SOL)  | Total (SOL)"
+  );
+  console.log(
+    "  ----------------------------|-----|-------------|-------------|------------"
+  );
 
-  try {
-    const airdropSig = await connection.requestAirdrop(
-      sender.publicKey,
-      2 * LAMPORTS_PER_SOL
+  for (const s of scenarios) {
+    const est = spraay.estimateCost(s.recipients, s.isToken, s.newAtas);
+    console.log(
+      `  ${s.label.padEnd(28)} | ${String(est.transactionCount).padStart(3)} | ${est.transactionFees.toFixed(6).padStart(11)} | ${est.rentCost.toFixed(6).padStart(11)} | ${est.totalCostSol.toFixed(6).padStart(10)}`
     );
-    await connection.confirmTransaction(airdropSig, "confirmed");
-    console.log("  ✓ Airdrop confirmed:", airdropSig.slice(0, 20) + "...");
-  } catch (err) {
-    console.error("  ✗ Airdrop failed (devnet may be congested). Try again.");
-    console.error("    Error:", (err as Error).message);
+  }
+
+  console.log("\n  ✅ Cost estimates complete\n");
+}
+
+// ============================================================================
+// Test 2: Batch SOL Transfer
+// ============================================================================
+
+async function testBatchSol() {
+  console.log("💰 TEST 2: Batch SOL Transfer (3 recipients)\n");
+
+  const recipients = [
+    { address: Keypair.generate().publicKey, amount: 0.01 },
+    { address: Keypair.generate().publicKey, amount: 0.01 },
+    { address: Keypair.generate().publicKey, amount: 0.01 },
+  ];
+
+  console.log("  Sender:", sender.publicKey.toBase58());
+  recipients.forEach((r, i) =>
+    console.log(`  Recipient ${i + 1}: ${(r.address as PublicKey).toBase58()}`)
+  );
+
+  const balance = await spraay.getBalance(sender.publicKey);
+  console.log(`\n  Sender balance: ${balance} SOL`);
+
+  if (balance < 0.1) {
+    console.log("  ❌ Insufficient SOL balance. Skipping.\n");
     return;
   }
 
-  // Step 2: Check sender balance
-  const senderBalance = await spraay.getBalance(sender.publicKey);
-  console.log(`\n[2/4] Sender balance: ${senderBalance} SOL`);
+  try {
+    const result = await spraay.batchSendSol(sender, recipients);
 
-  // Step 3: Estimate cost
-  console.log("\n[3/4] Estimating batch cost...");
-  const estimate = spraay.estimateCost(3, false);
-  console.log(`  Transaction fees: ~${estimate.transactionFees} SOL`);
-  console.log(`  Transactions needed: ${estimate.transactionCount}`);
+    console.log(`\n  ✅ Batch SOL Transfer Complete!`);
+    console.log(`     Recipients:   ${result.totalRecipients}`);
+    console.log(`     Total sent:   ${result.totalAmount} SOL`);
+    console.log(`     Spraay fee:   ${result.spraayFee} SOL`);
+    console.log(`     Transactions: ${result.transactionCount}`);
+    result.signatures.forEach((sig, i) =>
+      console.log(
+        `     Tx ${i + 1}: https://explorer.solana.com/tx/${sig}?cluster=devnet`
+      )
+    );
 
-  // Step 4: Execute batch SOL transfer
-  console.log("\n[4/4] Executing batch SOL transfer...");
-  console.log("  Sending 0.1 SOL to 3 recipients...\n");
+    // Verify
+    for (let i = 0; i < recipients.length; i++) {
+      const bal = await spraay.getBalance(recipients[i].address);
+      console.log(`     Recipient ${i + 1} balance: ${bal} SOL`);
+    }
+  } catch (err) {
+    console.log(`  ❌ Failed: ${(err as Error).message}`);
+  }
+
+  console.log();
+}
+
+// ============================================================================
+// Test 3: Batch USDC Transfer
+// ============================================================================
+
+async function testBatchUSDC() {
+  console.log("💵 TEST 3: Batch USDC Transfer (3 recipients)\n");
+
+  const recipients = [
+    { address: Keypair.generate().publicKey, amount: 1 },
+    { address: Keypair.generate().publicKey, amount: 2 },
+    { address: Keypair.generate().publicKey, amount: 1.5 },
+  ];
+
+  console.log("  Sender:", sender.publicKey.toBase58());
+  console.log("  USDC Mint (devnet):", DEVNET_USDC_MINT.toBase58());
+  recipients.forEach((r, i) =>
+    console.log(`  Recipient ${i + 1}: ${(r.address as PublicKey).toBase58()} -> ${r.amount} USDC`)
+  );
+
+  // Check USDC balance
+  const usdcBalance = await spraay.getTokenBalance(
+    sender.publicKey,
+    DEVNET_USDC_MINT
+  );
+  console.log(`\n  Sender USDC balance: ${usdcBalance} USDC`);
+
+  if (usdcBalance < 5) {
+    console.log("  ❌ Insufficient USDC. Get devnet USDC at https://faucet.circle.com");
+    console.log("     Skipping USDC test.\n");
+    return;
+  }
 
   try {
-    const result = await spraay.batchSendSol(sender, [
-      { address: recipient1.publicKey, amount: 0.1 },
-      { address: recipient2.publicKey, amount: 0.1 },
-      { address: recipient3.publicKey, amount: 0.1 },
-    ]);
+    const result = await spraay.batchSendToken(
+      sender,
+      DEVNET_USDC_MINT,
+      recipients
+    );
 
-    console.log("=== Batch Transfer Complete ===");
-    console.log(`  Recipients:    ${result.totalRecipients}`);
-    console.log(`  Total sent:    ${result.totalAmount} SOL`);
-    console.log(`  Spraay fee:    ${result.spraayFee} SOL`);
-    console.log(`  Transactions:  ${result.transactionCount}`);
-    console.log(`  Signatures:`);
-    result.signatures.forEach((sig, i) => {
-      console.log(`    [${i + 1}] ${sig}`);
+    console.log(`\n  ✅ Batch USDC Transfer Complete!`);
+    console.log(`     Recipients:   ${result.totalRecipients}`);
+    console.log(`     Total sent:   ${result.totalAmount} USDC`);
+    console.log(`     Spraay fee:   ${result.spraayFee} USDC`);
+    console.log(`     Transactions: ${result.transactionCount}`);
+    result.signatures.forEach((sig, i) =>
       console.log(
-        `        https://explorer.solana.com/tx/${sig}?cluster=devnet`
+        `     Tx ${i + 1}: https://explorer.solana.com/tx/${sig}?cluster=devnet`
+      )
+    );
+
+    // Verify recipient balances
+    for (let i = 0; i < recipients.length; i++) {
+      const bal = await spraay.getTokenBalance(
+        recipients[i].address,
+        DEVNET_USDC_MINT
       );
-    });
-
-    // Verify balances
-    console.log("\n=== Final Balances ===");
-    const r1Balance = await spraay.getBalance(recipient1.publicKey);
-    const r2Balance = await spraay.getBalance(recipient2.publicKey);
-    const r3Balance = await spraay.getBalance(recipient3.publicKey);
-    const finalSender = await spraay.getBalance(sender.publicKey);
-
-    console.log(`  Sender:      ${finalSender} SOL`);
-    console.log(`  Recipient 1: ${r1Balance} SOL`);
-    console.log(`  Recipient 2: ${r2Balance} SOL`);
-    console.log(`  Recipient 3: ${r3Balance} SOL`);
-
-    console.log("\n✓ Batch SOL transfer test passed!");
+      console.log(`     Recipient ${i + 1} USDC balance: ${bal}`);
+    }
   } catch (err) {
-    console.error("  ✗ Batch transfer failed:", (err as Error).message);
+    console.log(`  ❌ Failed: ${(err as Error).message}`);
   }
+
+  console.log();
 }
 
 // ============================================================================
-// Test: Estimate Large Batch
+// Test 4: Stress Test — Max SOL recipients in one transaction
 // ============================================================================
 
-function testEstimateLargeBatch() {
-  console.log("\n=== Cost Estimate: 200 USDC Recipients ===\n");
+async function testStressSOL() {
+  console.log("🔥 TEST 4: Stress Test — How many SOL transfers fit in 1 tx?\n");
 
-  // Estimate for 200 recipients, all needing new ATAs
-  const worstCase = spraay.estimateCost(200, true, 200);
-  console.log("Worst case (all new ATAs):");
-  console.log(`  Transaction fees:  ${worstCase.transactionFees.toFixed(6)} SOL`);
-  console.log(`  ATA rent cost:     ${worstCase.rentCost.toFixed(6)} SOL`);
-  console.log(`  Total cost:        ${worstCase.totalCostSol.toFixed(6)} SOL`);
-  console.log(`  Transactions:      ${worstCase.transactionCount}`);
+  const balance = await spraay.getBalance(sender.publicKey);
+  console.log(`  Sender balance: ${balance} SOL`);
 
-  // Estimate for 200 recipients, all with existing ATAs
-  const bestCase = spraay.estimateCost(200, true, 0);
-  console.log("\nBest case (all existing ATAs):");
-  console.log(`  Transaction fees:  ${bestCase.transactionFees.toFixed(6)} SOL`);
-  console.log(`  ATA rent cost:     ${bestCase.rentCost.toFixed(6)} SOL`);
-  console.log(`  Total cost:        ${bestCase.totalCostSol.toFixed(6)} SOL`);
-  console.log(`  Transactions:      ${bestCase.transactionCount}`);
+  // Try progressively larger batches
+  const testSizes = [5, 10, 15, 20, 22, 25];
+
+  for (const size of testSizes) {
+    const needed = size * 0.001 + 0.01; // tiny amounts + fee buffer
+    if (balance < needed) {
+      console.log(`  ⏭ Skipping ${size} recipients — need ${needed.toFixed(3)} SOL`);
+      continue;
+    }
+
+    const recipients = Array.from({ length: size }, () => ({
+      address: Keypair.generate().publicKey,
+      amount: 0.001,
+    }));
+
+    try {
+      const result = await spraay.batchSendSol(sender, recipients);
+      console.log(
+        `  ✅ ${String(size).padStart(2)} recipients -> ${result.transactionCount} tx(s) [${result.signatures[0].slice(0, 16)}...]`
+      );
+
+      // If it took more than 1 transaction, we found the chunking point
+      if (result.transactionCount > 1) {
+        console.log(
+          `\n  📏 SDK chunked at ${size} recipients into ${result.transactionCount} transactions`
+        );
+        console.log(
+          `     (maxSolRecipientsPerTx is set to ${15})`
+        );
+        break;
+      }
+    } catch (err) {
+      console.log(`  ❌ ${size} recipients failed: ${(err as Error).message}`);
+      break;
+    }
+
+    // Small delay between tests
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  console.log();
 }
 
 // ============================================================================
-// Run Tests
+// Run All Tests
 // ============================================================================
 
 async function main() {
-  console.log("╔══════════════════════════════════════════════════╗");
-  console.log("║      💧 Spraay Solana SDK — Test Suite          ║");
-  console.log("║      Batch payments on Solana                   ║");
-  console.log("╚══════════════════════════════════════════════════╝\n");
+  console.log("╔══════════════════════════════════════════════════════╗");
+  console.log("║    💧 Spraay Solana SDK — Full Test Suite           ║");
+  console.log("║    Batch payments on Solana (devnet)                ║");
+  console.log("╚══════════════════════════════════════════════════════╝\n");
 
-  // Always run estimates (no network needed)
-  testEstimateLargeBatch();
+  console.log(`Sender: ${sender.publicKey.toBase58()}`);
+  const solBal = await spraay.getBalance(sender.publicKey);
+  const usdcBal = await spraay.getTokenBalance(sender.publicKey, DEVNET_USDC_MINT);
+  console.log(`SOL Balance: ${solBal}`);
+  console.log(`USDC Balance: ${usdcBal}`);
+  console.log("\n" + "=".repeat(55) + "\n");
 
-  // Run devnet test
-  console.log("\n" + "=".repeat(50));
-  await testBatchSolTransfer();
+  // Test 1: Estimates (no network)
+  testEstimates();
+
+  console.log("=".repeat(55) + "\n");
+
+  // Test 2: Batch SOL
+  await testBatchSol();
+
+  console.log("=".repeat(55) + "\n");
+
+  // Test 3: Batch USDC
+  await testBatchUSDC();
+
+  console.log("=".repeat(55) + "\n");
+
+  // Test 4: Stress test
+  await testStressSOL();
+
+  console.log("=".repeat(55));
+  console.log("🎉 All tests complete!");
 }
 
 main().catch(console.error);
