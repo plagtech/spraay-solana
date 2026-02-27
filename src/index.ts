@@ -69,7 +69,7 @@ export interface SpraayConfig {
 const DEFAULT_CONFIG: Required<SpraayConfig> = {
   rpcUrl: "https://api.mainnet-beta.solana.com",
   feePercent: 0.3,
-  feeTreasury: "SpRaaYzKRd2TSgCvMwD7KK5HCghAf6FEkFTdAeAoTjr", // TODO: Replace with actual Spraay treasury
+  feeTreasury: "bJ37kGB2i121dSCLunANqh3Qt2RRK14WWH2HGHRTJ4T", // Spraay treasury
   maxSolRecipientsPerTx: 15,
   maxSplNewRecipientsPerTx: 7,
   maxSplExistingRecipientsPerTx: 15,
